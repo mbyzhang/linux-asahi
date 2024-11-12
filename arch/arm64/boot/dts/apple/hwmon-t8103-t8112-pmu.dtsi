@@ -1,0 +1,119 @@
+// SPDX-License-Identifier: GPL-2.0+ OR MIT
+/*
+ * hwmon pmu sensors common to T8103 and T8112.
+ */
+
+&smc {
+	hwmon {
+		apple,power-keys {
+			power-PP0b {
+				apple,key-id = "PP0b";
+				label = "CPU P-cores Power";
+			};
+
+			power-PP1b {
+				apple,key-id = "PP1b";
+				label = "GPU Power";
+			};
+
+			power-PP2b {
+				apple,key-id = "PP2b";
+				label = "SoC Power";
+			};
+
+			power-PP4b {
+				apple,key-id = "PP4b";
+				label = "DRAM VDD2H Power";
+			};
+
+			power-PP7b {
+				apple,key-id = "PP7b";
+				label = "CPU SRAM 1 Power";
+			};
+
+			power-PP9b {
+				apple,key-id = "PP9b";
+				label = "CPU SRAM 2 Power";
+			};
+
+			power-PPbb {
+				apple,key-id = "PPbb";
+				label = "CPU E-cores Power";
+			};
+		};
+
+		apple,volt-keys {
+			volt-VP0b {
+				apple,key-id = "VP0b";
+				label = "CPU P-cores Voltage";
+			};
+
+			volt-VP1b {
+				apple,key-id = "VP1b";
+				label = "GPU Voltage";
+			};
+
+			volt-VP2b {
+				apple,key-id = "VP2b";
+				label = "SoC Voltage";
+			};
+
+			volt-VP4b {
+				apple,key-id = "VP4b";
+				label = "DRAM VDD2H Voltage";
+			};
+
+			volt-VP7b {
+				apple,key-id = "VP7b";
+				label = "CPU SRAM 1 Voltage";
+			};
+
+			volt-VP9b {
+				apple,key-id = "VP9b";
+				label = "CPU SRAM 2 Voltage";
+			};
+
+			volt-VPbb {
+				apple,key-id = "VPbb";
+				label = "CPU E-cores Voltage";
+			};
+		};
+
+		apple,current-keys {
+			current-IP0b {
+				apple,key-id = "IP0b";
+				label = "CPU P-cores Current";
+			};
+
+			current-IP1b {
+				apple,key-id = "IP1b";
+				label = "GPU Current";
+			};
+
+			current-IP2b {
+				apple,key-id = "IP2b";
+				label = "SoC Current";
+			};
+
+			current-IP4b {
+				apple,key-id = "IP4b";
+				label = "DRAM VDD2H Current";
+			};
+
+			current-IP7b {
+				apple,key-id = "IP7b";
+				label = "CPU SRAM 1 Current";
+			};
+
+			current-IP9b {
+				apple,key-id = "IP9b";
+				label = "CPU SRAM 2 Current";
+			};
+
+			current-IPbb {
+				apple,key-id = "IPbb";
+				label = "CPU E-cores Current";
+			};
+		};
+	};
+};

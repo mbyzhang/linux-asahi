@@ -187,5 +187,6 @@
 };
 
 #include "hwmon-common.dtsi"
+#include "hwmon-t8103-t8112-pmu.dtsi"
 
 #include "spi1-nvram.dtsi"
