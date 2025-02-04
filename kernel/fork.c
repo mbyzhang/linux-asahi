@@ -2004,24 +2004,48 @@ static inline void rcu_copy_process(struct task_struct *p)
 static int __pidfd_prepare(struct pid *pid, unsigned int flags, struct file **ret)
 {
 	int pidfd;
+	int retval;
 	struct file *pidfd_file;
 
+	if (flags & PIDFD_RESERVE) {
+		spin_lock(&pid->lock);
+		if (pid->state != PIDSTATE_ALLOCATED) {
+			spin_unlock(&pid->lock);
+			return -ESRCH;
+		}
+
+		++pid->rsv_count; // TODO: overflow check
+		spin_unlock(&pid->lock);
+	}
+
 	pidfd = get_unused_fd_flags(O_CLOEXEC);
-	if (pidfd < 0)
-		return pidfd;
+	if (pidfd < 0) {
+		retval = pidfd;
+		goto free_pid_reserve;
+	}
 
 	pidfd_file = pidfs_alloc_file(pid, flags | O_RDWR);
 	if (IS_ERR(pidfd_file)) {
-		put_unused_fd(pidfd);
-		return PTR_ERR(pidfd_file);
+		retval = PTR_ERR(pidfd_file);
+		goto free_fd;
 	}
+
 	/*
 	 * anon_inode_getfile() ignores everything outside of the
 	 * O_ACCMODE | O_NONBLOCK mask, set PIDFD_THREAD manually.
 	 */
-	pidfd_file->f_flags |= (flags & PIDFD_THREAD);
+	pidfd_file->f_flags |= (flags & (PIDFD_THREAD | PIDFD_RESERVE));
 	*ret = pidfd_file;
 	return pidfd;
+
+free_fd:
+	put_unused_fd(pidfd);
+
+free_pid_reserve:
+	if (flags & PIDFD_RESERVE) {
+		put_pid_rsv(pid);
+	}
+	return retval;
 }
 
 /**
@@ -2122,6 +2146,7 @@ __latent_entropy struct task_struct *copy_process(
 					struct kernel_clone_args *args)
 {
 	int pidfd = -1, retval;
+	unsigned int f_flags;
 	struct task_struct *p;
 	struct multiprocess_signals delayed;
 	struct file *pidfile = NULL;
@@ -2387,11 +2412,44 @@ __latent_entropy struct task_struct *copy_process(
 	stackleak_task_init(p);
 
 	if (pid != &init_struct_pid) {
-		pid = alloc_pid(p->nsproxy->pid_ns_for_children, args->set_tid,
+		if (args->set_tid_size == 0 && args->set_tid_pidfd) {
+			pid = pidfd_get_pid(args->set_tid_pidfd, &f_flags);
+			if (IS_ERR(pid)) {
+				retval = -EBADF;
+				goto bad_fork_cleanup_thread;
+			}
+
+			if (!(f_flags & PIDFD_RESERVE)) {
+				retval = -EINVAL;
+				goto bad_fork_cleanup_thread;
+			}
+
+			spin_lock(&pid->lock);
+
+			if (pid->state != PIDSTATE_FREEABLE) {
+				if (pid->state == PIDSTATE_ALLOCATED) {
+					retval = -EEXIST;
+				}
+				else {
+					retval = -ESRCH;
+				}
+
+				spin_unlock(&pid->lock);
+				goto bad_fork_cleanup_thread;
+			}
+
+			// TODO: permission checks
+
+			pid->state = PIDSTATE_ALLOCATED;
+			spin_unlock(&pid->lock);
+		}
+		else {
+			pid = alloc_pid(p->nsproxy->pid_ns_for_children, args->set_tid,
 				args->set_tid_size);
-		if (IS_ERR(pid)) {
-			retval = PTR_ERR(pid);
-			goto bad_fork_cleanup_thread;
+			if (IS_ERR(pid)) {
+				retval = PTR_ERR(pid);
+				goto bad_fork_cleanup_thread;
+			}
 		}
 	}
 
@@ -2961,9 +3019,6 @@ noinline static int copy_clone_args_from_user(struct kernel_clone_args *kargs,
 	if (unlikely(!args.set_tid && args.set_tid_size > 0))
 		return -EINVAL;
 
-	if (unlikely(args.set_tid && args.set_tid_size == 0))
-		return -EINVAL;
-
 	/*
 	 * Verify that higher 32bits of exit_signal are unset and that
 	 * it is a valid signal
@@ -2989,12 +3044,17 @@ noinline static int copy_clone_args_from_user(struct kernel_clone_args *kargs,
 		.cgroup		= args.cgroup,
 	};
 
-	if (args.set_tid &&
-		copy_from_user(kset_tid, u64_to_user_ptr(args.set_tid),
-			(kargs->set_tid_size * sizeof(pid_t))))
-		return -EFAULT;
+	if (args.set_tid_size == 0) {
+		kargs->set_tid_pidfd = args.set_tid;
+	}
+	else {
+		if (args.set_tid &&
+			copy_from_user(kset_tid, u64_to_user_ptr(args.set_tid),
+				(kargs->set_tid_size * sizeof(pid_t))))
+			return -EFAULT;
 
-	kargs->set_tid = kset_tid;
+		kargs->set_tid = kset_tid;
+	}
 
 	return 0;
 }

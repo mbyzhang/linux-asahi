@@ -34,7 +34,11 @@ struct kernel_clone_args {
 	unsigned long stack;
 	unsigned long stack_size;
 	unsigned long tls;
-	pid_t *set_tid;
+	union {
+		pid_t *set_tid;
+		unsigned int set_tid_pidfd;
+	};
+
 	/* Number of elements in *set_tid */
 	size_t set_tid_size;
 	int cgroup;

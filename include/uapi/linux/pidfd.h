@@ -10,6 +10,7 @@
 /* Flags for pidfd_open().  */
 #define PIDFD_NONBLOCK	O_NONBLOCK
 #define PIDFD_THREAD	O_EXCL
+#define PIDFD_RESERVE	O_NOCTTY
 
 /* Flags for pidfd_send_signal(). */
 #define PIDFD_SIGNAL_THREAD		(1UL << 0)

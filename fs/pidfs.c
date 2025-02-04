@@ -13,6 +13,7 @@
 #include <linux/pseudo_fs.h>
 #include <linux/ptrace.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <uapi/linux/pidfd.h>
 #include <linux/ipc_namespace.h>
 #include <linux/time_namespace.h>
@@ -233,7 +234,8 @@ struct pid *pidfd_pid(const struct file *file)
 {
 	if (file->f_op != &pidfs_file_operations)
 		return ERR_PTR(-EBADF);
-	return file_inode(file)->i_private;
+	struct pid_file *pf = file_inode(file)->i_private;
+	return pf->pid;
 }
 
 static struct vfsmount *pidfs_mnt __ro_after_init;
@@ -317,12 +319,22 @@ static const struct inode_operations pidfs_inode_operations = {
 	.setattr = pidfs_setattr,
 };
 
+static void pidfs_free_pid_file(struct pid_file *pf)
+{
+	struct pid *pid = pf->pid;
+	if (pf->flags & PIDFD_RESERVE) {
+		put_pid_rsv(pid);
+	}
+	put_pid(pf->pid);
+	kfree(pf);
+}
+
 static void pidfs_evict_inode(struct inode *inode)
 {
-	struct pid *pid = inode->i_private;
+	struct pid_file *pf = inode->i_private;
 
 	clear_inode(inode);
-	put_pid(pid);
+	pidfs_free_pid_file(pf);
 	pidfs_free_inum(inode->i_ino);
 }
 
@@ -364,8 +376,8 @@ static int pidfs_init_inode(struct inode *inode, void *data)
 
 static void pidfs_put_data(void *data)
 {
-	struct pid *pid = data;
-	put_pid(pid);
+	struct pid_file *pf = data;
+	pidfs_free_pid_file(pf);
 }
 
 static const struct stashed_operations pidfs_stashed_ops = {
@@ -400,12 +412,25 @@ struct file *pidfs_alloc_file(struct pid *pid, unsigned int flags)
 	struct path path;
 	int ret;
 
-	ret = path_from_stashed(&pid->stashed, pidfs_mnt, get_pid(pid), &path);
-	if (ret < 0)
+	struct pid_file *pf = kmalloc(sizeof(struct pid_file), GFP_KERNEL);
+	if (!pf)
+		return ERR_PTR(-ENOMEM);
+
+	pf->flags = flags;
+	pf->pid = get_pid(pid);
+
+	ret = path_from_stashed(&pid->stashed, pidfs_mnt, pf, &path);
+	if (ret < 0) {
+		kfree(pf);
 		return ERR_PTR(ret);
+	}
 
 	pidfd_file = dentry_open(&path, flags, current_cred());
 	path_put(&path);
+
+	if (IS_ERR(pidfd_file)) {
+		kfree(pf);
+	}
 	return pidfd_file;
 }
 

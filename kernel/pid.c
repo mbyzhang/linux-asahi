@@ -124,6 +124,13 @@ void put_pid(struct pid *pid)
 }
 EXPORT_SYMBOL_GPL(put_pid);
 
+void put_pid_rsv(struct pid *pid)
+{
+	spin_lock(&pid->lock);
+	try_free_pid(pid, 1);
+	spin_unlock(&pid->lock);
+}
+
 static void delayed_put_pid(struct rcu_head *rhp)
 {
 	struct pid *pid = container_of(rhp, struct pid, rcu);
@@ -161,6 +168,18 @@ void free_pid(struct pid *pid)
 	spin_unlock_irqrestore(&pidmap_lock, flags);
 
 	call_rcu(&pid->rcu, delayed_put_pid);
+}
+
+// Expects pid->lock to be held
+void try_free_pid(struct pid *pid, int rsv_count_sub)
+{
+	pid->rsv_count -= rsv_count_sub;
+	BUG_ON(pid->rsv_count < 0);
+
+	if (pid->state == PIDSTATE_FREEABLE && pid->rsv_count <= 0) {
+		pid->state = PIDSTATE_FREED;
+		free_pid(pid);
+	}
 }
 
 struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
@@ -266,6 +285,8 @@ struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
 	get_pid_ns(ns);
 	refcount_set(&pid->count, 1);
 	spin_lock_init(&pid->lock);
+	pid->rsv_count = 0;
+	pid->state = PIDSTATE_ALLOCATED;
 	for (type = 0; type < PIDTYPE_MAX; ++type)
 		INIT_HLIST_HEAD(&pid->tasks[type]);
 
@@ -363,8 +384,12 @@ static void __change_pid(struct task_struct *task, enum pid_type type,
 	for (tmp = PIDTYPE_MAX; --tmp >= 0; )
 		if (pid_has_task(pid, tmp))
 			return;
-
-	free_pid(pid);
+	
+	spin_lock(&pid->lock);
+	WARN_ON_ONCE(pid->state != PIDSTATE_ALLOCATED);
+	pid->state = PIDSTATE_FREEABLE;
+	try_free_pid(pid, 0);
+	spin_unlock(&pid->lock);
 }
 
 void detach_pid(struct task_struct *task, enum pid_type type)
@@ -631,7 +656,7 @@ SYSCALL_DEFINE2(pidfd_open, pid_t, pid, unsigned int, flags)
 	int fd;
 	struct pid *p;
 
-	if (flags & ~(PIDFD_NONBLOCK | PIDFD_THREAD))
+	if (flags & ~(PIDFD_NONBLOCK | PIDFD_THREAD | PIDFD_RESERVE))
 		return -EINVAL;
 
 	if (pid <= 0)

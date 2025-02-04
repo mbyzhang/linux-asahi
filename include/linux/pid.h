@@ -52,9 +52,16 @@ struct upid {
 	struct pid_namespace *ns;
 };
 
-struct pid
-{
+enum pid_state {
+	PIDSTATE_ALLOCATED = 0,
+	PIDSTATE_FREEABLE,
+	PIDSTATE_FREED,
+};
+
+struct pid {
 	refcount_t count;
+	int rsv_count;
+	unsigned int state;
 	unsigned int level;
 	spinlock_t lock;
 	struct dentry *stashed;
@@ -86,6 +93,7 @@ static inline struct pid *get_pid(struct pid *pid)
 }
 
 extern void put_pid(struct pid *pid);
+extern void put_pid_rsv(struct pid *pid);
 extern struct task_struct *pid_task(struct pid *pid, enum pid_type);
 static inline bool pid_has_task(struct pid *pid, enum pid_type type)
 {
@@ -101,7 +109,7 @@ extern struct pid *get_task_pid(struct task_struct *task, enum pid_type type);
 extern void attach_pid(struct task_struct *task, enum pid_type);
 extern void detach_pid(struct task_struct *task, enum pid_type);
 extern void change_pid(struct task_struct *task, enum pid_type,
-			struct pid *pid);
+		       struct pid *pid);
 extern void exchange_tids(struct task_struct *task, struct task_struct *old);
 extern void transfer_pid(struct task_struct *old, struct task_struct *new,
 			 enum pid_type);
@@ -130,6 +138,7 @@ extern struct pid *find_ge_pid(int nr, struct pid_namespace *);
 extern struct pid *alloc_pid(struct pid_namespace *ns, pid_t *set_tid,
 			     size_t set_tid_size);
 extern void free_pid(struct pid *pid);
+extern void try_free_pid(struct pid *pid, int rsv_count_sub);
 extern void disable_pid_allocation(struct pid_namespace *ns);
 
 /*
@@ -189,7 +198,7 @@ pid_t pid_vnr(struct pid *pid);
 			hlist_for_each_entry_rcu((task),		\
 				&(pid)->tasks[type], pid_links[type]) {
 
-			/*
+/*
 			 * Both old and new leaders may be attached to
 			 * the same pid in the middle of de_thread().
 			 */
