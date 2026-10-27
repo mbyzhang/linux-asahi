@@ -1443,7 +1443,16 @@ void arch_perf_update_userpage(struct perf_event *event,
 	userpg->cap_user_rdpmc = armv8pmu_event_has_user_read(event);
 
 	if (userpg->cap_user_rdpmc) {
-		if (event->hw.flags & ARMPMU_EVT_64BIT)
+		/*
+		 * The Apple counters count in 47/63 bits: prev_count is the
+		 * sign-extended value written (see armpmu_event_set_period),
+		 * so EL0 sign-extends from that width.
+		 */
+		if (event->hw.flags & ARMPMU_EVT_47BIT)
+			userpg->pmc_width = 47;
+		else if (event->hw.flags & ARMPMU_EVT_63BIT)
+			userpg->pmc_width = 63;
+		else if (event->hw.flags & ARMPMU_EVT_64BIT)
 			userpg->pmc_width = 64;
 		else
 			userpg->pmc_width = 32;
