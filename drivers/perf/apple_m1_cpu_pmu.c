@@ -22,6 +22,9 @@
 
 #define M1_PMU_CFG_EVENT		GENMASK(7, 0)
 
+/* config1: let EL0 read the counter (see m1_pmu_user_event_idx) */
+#define M1_PMU_CFG1_RDPMC		BIT(1)
+
 #define ANY_BUT_0_1			GENMASK(9, 2)
 #define ONLY_2_TO_7			GENMASK(7, 2)
 #define ONLY_2_4_6			(BIT(2) | BIT(4) | BIT(6))
@@ -165,11 +168,23 @@ static const struct attribute_group m1_pmu_events_attr_group = {
 };
 
 PMU_FORMAT_ATTR(event, "config:0-7");
+PMU_FORMAT_ATTR(rdpmc, "config1:1");
 
 static struct attribute *m1_pmu_format_attrs[] = {
 	&format_attr_event.attr,
+	&format_attr_rdpmc.attr,
 	NULL,
 };
+
+/*
+ * Whether events may ask for their counter to be read from EL0 (as with
+ * kernel.perf_user_access of the PMUv3 driver).  EL0 then has access to all
+ * the counters while a task with such an event runs: the ones not in use
+ * are cleared then.
+ */
+static bool m1_pmu_user_access;
+module_param_named(user_access, m1_pmu_user_access, bool, 0644);
+MODULE_PARM_DESC(user_access, "Allow EL0 to read the counters of its own events (config1:1)");
 
 static const struct attribute_group m1_pmu_format_attr_group = {
 	.name = "format",
@@ -472,14 +487,66 @@ static void __m1_pmu_set_mode(u8 mode)
 	isb();
 }
 
+static void __m1_pmu_set_user_access(bool en)
+{
+	u64 val;
+
+	val = read_sysreg_s(SYS_IMP_APL_PMCR0_EL1);
+	if (en)
+		val |= PMCR0_ALLOW_CNT_EN_EL0;
+	else
+		val &= ~PMCR0_ALLOW_CNT_EN_EL0;
+	write_sysreg_s(val, SYS_IMP_APL_PMCR0_EL1);
+}
+
 static void m1_pmu_start(struct arm_pmu *cpu_pmu)
 {
+	struct pmu_hw_events *cpuc = this_cpu_ptr(cpu_pmu->hw_events);
+	struct perf_event_context *ctx = perf_cpu_task_ctx();
+	bool user = READ_ONCE(m1_pmu_user_access) && ctx && ctx->nr_user;
+	int i;
+
+	if (user) {
+		/* Clear the unused counters to avoid leaking their contents */
+		for_each_clear_bit(i, cpuc->used_mask, M1_PMU_NR_COUNTERS)
+			m1_pmu_write_hw_counter(0, i);
+	}
+	__m1_pmu_set_user_access(user);
+
 	__m1_pmu_set_mode(PMCR0_IMODE_FIQ);
 }
 
 static void m1_pmu_stop(struct arm_pmu *cpu_pmu)
 {
 	__m1_pmu_set_mode(PMCR0_IMODE_OFF);
+	__m1_pmu_set_user_access(false);
+	isb();
+}
+
+/*
+ * Index of the counter for EL0 reads in the perf mmap page: one more than
+ * the PMCn number (0: not readable).
+ */
+static int m1_pmu_user_event_idx(struct perf_event *event)
+{
+	if (!READ_ONCE(m1_pmu_user_access) ||
+	    !(event->hw.flags & PERF_EVENT_FLAG_USER_READ_CNT))
+		return 0;
+
+	return event->hw.idx + 1;
+}
+
+static int m1_pmu_map_user_access(struct perf_event *event)
+{
+	if (!(event->attr.config1 & M1_PMU_CFG1_RDPMC))
+		return 0;
+
+	/* Only for a task's own events, as with PMUv3 */
+	if (!(event->attach_state & PERF_ATTACH_TASK))
+		return -EINVAL;
+
+	event->hw.flags |= PERF_EVENT_FLAG_USER_READ_CNT;
+	return 0;
 }
 
 static int m1_pmu_map_event(struct perf_event *event)
@@ -489,7 +556,12 @@ static int m1_pmu_map_event(struct perf_event *event)
 	 * triggers the overflow interrupt. Advertise the counters
 	 * being 47bit wide to mimick the behaviour of the ARM PMU.
 	 */
+	int ret;
+
 	event->hw.flags |= ARMPMU_EVT_47BIT;
+	ret = m1_pmu_map_user_access(event);
+	if (ret)
+		return ret;
 	return armpmu_map_event(event, &m1_pmu_perf_map, NULL, M1_PMU_CFG_EVENT);
 }
 
@@ -500,7 +572,12 @@ static int m2_pmu_map_event(struct perf_event *event)
 	 * Which, as far as we're concerned, actually means 63 bits.
 	 * Yes, this is getting awkward.
 	 */
+	int ret;
+
 	event->hw.flags |= ARMPMU_EVT_63BIT;
+	ret = m1_pmu_map_user_access(event);
+	if (ret)
+		return ret;
 	return armpmu_map_event(event, &m1_pmu_perf_map, NULL, M1_PMU_CFG_EVENT);
 }
 
@@ -558,6 +635,7 @@ static int m1_pmu_init(struct arm_pmu *cpu_pmu, u32 flags)
 		return WARN_ON(-EINVAL);
 
 	cpu_pmu->reset		  = m1_pmu_reset;
+	cpu_pmu->pmu.event_idx	  = m1_pmu_user_event_idx;
 	cpu_pmu->set_event_filter = m1_pmu_set_event_filter;
 
 	cpu_pmu->num_events	  = M1_PMU_NR_COUNTERS;
