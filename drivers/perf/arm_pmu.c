@@ -281,6 +281,15 @@ armpmu_stop(struct perf_event *event, int flags)
 	if (!(hwc->state & PERF_HES_STOPPED)) {
 		armpmu->disable(event);
 		armpmu_event_update(event);
+		/*
+		 * The period ran out and its interrupt was not taken: the
+		 * interrupt comes some events after the overflow (e.g. the
+		 * Apple PMUs' FIQ), and disabling the counter cancels it.
+		 * armpmu_start() has it reported.
+		 */
+		if (is_sampling_event(event) &&
+		    local64_read(&hwc->period_left) <= 0)
+			hwc->flags |= ARMPMU_EVT_OVF_MISSED;
 		hwc->state |= PERF_HES_STOPPED | PERF_HES_UPTODATE;
 	}
 }
@@ -305,7 +314,19 @@ static void armpmu_start(struct perf_event *event, int flags)
 	 * get an interrupt too soon or *way* too late if the overflow has
 	 * happened since disabling.
 	 */
-	armpmu_event_set_period(event);
+	if (hwc->flags & ARMPMU_EVT_OVF_MISSED) {
+		/*
+		 * Overflow on the next event, for the interrupt handler to
+		 * report the overflow missed (see armpmu_stop()), rather
+		 * than the next one a period later.
+		 */
+		hwc->flags &= ~ARMPMU_EVT_OVF_MISSED;
+		local64_set(&hwc->prev_count, (u64)-1);
+		armpmu->write_counter(event, (u64)-1 & arm_pmu_event_max_period(event));
+		perf_event_update_userpage(event);
+	} else {
+		armpmu_event_set_period(event);
+	}
 	armpmu->enable(event);
 }
 
